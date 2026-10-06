@@ -220,6 +220,7 @@ _parser = argparse.ArgumentParser(description="OmniDictate-CLI Real-time Dictati
 _parser.add_argument("--cpu", action="store_true", help="Force CPU mode (VRAM usage: 0GB, slower transcription)")
 _parser.add_argument("--ai", action="store_true", help="Enable Ollama AI post-processing for improved kanji accuracy")
 _parser.add_argument("--irodori", action="store_true", help="Start with Irodori direct mode ON (send text to Irodori instead of pasting)")
+_parser.add_argument("--direct", choices=["irodori", "lc"], help="Start with direct mode ON for the given target (irodori / lc = local-claude terminal)")
 _args = _parser.parse_args()
 FORCE_CPU = _args.cpu
 AI_CORRECTION = _args.ai
@@ -235,8 +236,39 @@ AI_CORRECTION = _args.ai
 IRODORI_DICTATION_URL = os.environ.get("OMNIDICTATE_IRODORI_URL", "http://127.0.0.1:8000/api/dictation")
 IRODORI_TOGGLE_VK = 0x78  # F9（Ctrl+Alt と同時押し）
 irodori_direct = threading.Event()
-if _args.irodori:
+
+# --- local-claude 直送モード（2026-10-07）---
+# local-claude（ターミナルで動く Claude Code）の入力欄へ、フォーカスに関係なく届ける。
+# ブラウザと違い受け口が無いので、そのコンソールへ「キーが押された」入力として直接書き込む
+# （console_bridge.py。AttachConsole + WriteConsoleInputW）。送り先は local-claude の start.ps1 が
+# 起動時に書く state\console.json の pid（後から起動したセッションが勝つ）。
+#   切り替え: Ctrl+Alt+F10（ON で上がる音3回、OFF で低い音1回）。Irodori 直送（F9）とは同時に ON にならない
+#   送信: 文末の「どうぞ。」「どうぞ」と音声の「エンター」を Enter キーにして送る
+#   確認の画面（ツールの許可・選択肢）が出ているときの Enter は、既定の「Yes」で承認してしまう。
+#   そこで Enter の前に画面を読み、確認の画面なら1回目は送らずに警告音（下がる音2回）だけ鳴らす。
+#   警告のあと LC_CONFIRM_WINDOW_SEC 秒以内にもう一度 Enter（どうぞ／エンター）が来たら送る（2026-10-07 ユーザー決定）
+LC_STATE_FILE = os.environ.get("OMNIDICTATE_LC_STATE", r"D:\AIWork\local-claude\state\console.json")
+LC_TOGGLE_VK = 0x79  # F10（Ctrl+Alt と同時押し）
+LC_SEND_KEYWORD = re.compile(r"\s*どうぞ[。．]?$")
+# Claude Code の確認・選択の画面に出る文言（claude.exe から抜き出したもの。2.1.283 時点）
+LC_PROMPT_MARKERS = ("Do you want to", "Esc to cancel", "Enter to confirm", "Enter to select",
+                     "Yes, and don't ask again", "No, and tell Claude what to do differently")
+# 案内文の無い選択肢の画面もある（初回のテーマ選択は上の文言が1つも出なかった。2026-10-07 実機）。
+# カーソルの付いた番号つきの選択肢（「> 2. Dark mode」「❯ 1. Yes」）でも見分ける。
+# 入力の履歴（「> 次の土曜日に…」）はカーソルの後ろが番号ではないので当たらない。
+LC_MENU_RE = re.compile(r"^\s*[>❯›]\s*\d+\.\s", re.M)
+LC_CONFIRM_WINDOW_SEC = 20
+_CONSOLE_BRIDGE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "console_bridge.py")
+lc_direct = threading.Event()
+_lc_warned_at = 0.0
+
+if _args.irodori or _args.direct == "irodori":
     irodori_direct.set()
+elif _args.direct == "lc":
+    lc_direct.set()
+
+def direct_active():
+    return irodori_direct.is_set() or lc_direct.is_set()
 
 def _beep_async(pattern):
     """(周波数, ミリ秒) の並びを鳴らす。winsound.Beep は鳴り終わるまで戻らないので別スレッドで。"""
@@ -255,9 +287,85 @@ def toggle_irodori_direct():
         print("[IRODORI] 直送モード OFF → 前面のウィンドウへ貼り付ける")
         _beep_async([(500, 200)])
     else:
+        lc_direct.clear()
         irodori_direct.set()
         print(f"[IRODORI] 直送モード ON → Irodori へ送る ({IRODORI_DICTATION_URL})")
         _beep_async([(1200, 90), (1600, 90)])
+
+def toggle_lc_direct():
+    if lc_direct.is_set():
+        lc_direct.clear()
+        print("[LC] 直送モード OFF → 前面のウィンドウへ貼り付ける")
+        _beep_async([(500, 200)])
+    else:
+        irodori_direct.clear()
+        lc_direct.set()
+        pid = _lc_target_pid()
+        where = f"pid {pid}" if pid else f"送り先が未登録（{LC_STATE_FILE} が無い。local-claude を起動すると書かれる）"
+        print(f"[LC] 直送モード ON → local-claude のターミナルへ送る（{where}）")
+        _beep_async([(900, 80), (1200, 80), (1500, 80)])
+
+def _lc_target_pid():
+    try:
+        # PowerShell 5.1 の Set-Content -Encoding UTF8 は BOM を付けるので utf-8-sig で読む
+        with open(LC_STATE_FILE, encoding="utf-8-sig") as f:
+            return int(json.load(f)["pid"])
+    except Exception:
+        return None
+
+def _console_bridge(*args):
+    """console_bridge.py を使い捨ての子プロセスで呼ぶ（自分のコンソールから離れずに済むように）。"""
+    import subprocess
+    try:
+        r = subprocess.run([sys.executable, _CONSOLE_BRIDGE, *[str(a) for a in args]],
+                           capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+        return r.returncode == 0, r.stdout.decode("utf-8", "replace")
+    except Exception as e:
+        return False, f"ERROR: {e}"
+
+def lc_send_text(text):
+    pid = _lc_target_pid()
+    if not pid:
+        print(f"[LC] 送り先が分からない（{LC_STATE_FILE} が無い）")
+        return False
+    ok, out = _console_bridge("inject", pid, text)
+    if not ok:
+        print(f"[LC] 書き込みに失敗（pid {pid}）: {out.strip()}")
+    return ok
+
+def lc_enter():
+    """Enter を送る。確認の画面が出ていたら、1回目は警告だけ（→ モジュール冒頭の説明）。"""
+    global _lc_warned_at
+    pid = _lc_target_pid()
+    if not pid:
+        print(f"[LC] 送り先が分からない（{LC_STATE_FILE} が無い）")
+        _beep_async([(400, 120), (400, 120)])
+        return False
+    ok, screen = _console_bridge("screen", pid)
+    if not ok:
+        print(f"[LC] 画面を読めない（pid {pid}）: {screen.strip()}")
+        _beep_async([(400, 120), (400, 120)])
+        return False
+    hit = next((m for m in LC_PROMPT_MARKERS if m in screen), None)
+    if not hit:
+        mm = LC_MENU_RE.search(screen)
+        hit = mm.group(0).strip() if mm else None
+    if hit:
+        if time.time() - _lc_warned_at > LC_CONFIRM_WINDOW_SEC:
+            _lc_warned_at = time.time()
+            print(f"[LC] 確認の画面が出ている（'{hit}'）。Enter は送らなかった。"
+                  f"{LC_CONFIRM_WINDOW_SEC}秒以内にもう一度「どうぞ」「エンター」と言えば送る")
+            _beep_async([(700, 150), (350, 350)])
+            return False
+        print(f"[LC] 警告のあとの2回目なので、確認の画面に Enter を送る（'{hit}'）")
+    _lc_warned_at = 0.0
+    ok, out = _console_bridge("enter", pid)
+    if ok:
+        print("[LC] Enter を送った")
+    else:
+        print(f"[LC] Enter の書き込みに失敗（pid {pid}）: {out.strip()}")
+        _beep_async([(400, 120), (400, 120)])
+    return ok
 
 def send_to_irodori(text="", action=None):
     """Irodori のバックエンドへ送る。UI が受け取れたら True。"""
@@ -466,6 +574,7 @@ def _write_status_file():
     status = {
         "idle": (not recording) and (not vad_active) and text_queue.empty(),
         "irodori": irodori_direct.is_set(),
+        "direct": "irodori" if irodori_direct.is_set() else ("lc" if lc_direct.is_set() else None),
         "pid": os.getpid(),
         "ts": time.time(),
     }
@@ -1077,8 +1186,8 @@ def process_audio_buffer(pause_sec=0.0):
         # --- Command Parsing ---
         new_line_match = re.match(r"(new line|next line|エンター)", transcribed_text.strip().lower())
         if new_line_match:
-            if irodori_direct.is_set():
-                # Irodori の入力欄で Enter ＝送信。先に並んでいる文字を追い越さないよう、同じ列に並べる
+            if direct_active():
+                # 直送先の入力欄で Enter ＝送信。先に並んでいる文字を追い越さないよう、同じ列に並べる
                 text_queue.put(("__action__", "send"))
                 audio_buffer = []
                 return
@@ -1088,7 +1197,7 @@ def process_audio_buffer(pause_sec=0.0):
 
         punctuation_match = re.match(r"(question mark|exclamation mark|comma|period|full stop|colon|semicolon|open parenthesis|close parenthesis|open bracket|close bracket|open brace|close brace|hyphen|dash|underscore|plus|equals|at|hash|dollar|percent|caret|ampersand|asterisk)", transcribed_text.strip().lower())
         if punctuation_match:
-            if irodori_direct.is_set():
+            if direct_active():
                 mark = PUNCTUATION_MAP.get(punctuation_match.group(1))
                 if mark:
                     text_queue.put(mark)
@@ -1099,9 +1208,9 @@ def process_audio_buffer(pause_sec=0.0):
                 return
 
         command_match = re.match(r"(delete|remove) last (\d+|one|two|three|four|five|six|seven|eight|nine|ten) words?", transcribed_text.strip().lower())
-        if command_match and irodori_direct.is_set():
+        if command_match and direct_active():
             # 前面のウィンドウのキー操作で消す仕組みなので、直送中に動かすと作業中の文書を消してしまう
-            print("[IRODORI] 直送モード中は「delete last N words」を使えない（無視した）")
+            print("[直送] 直送モード中は「delete last N words」を使えない（無視した）")
             audio_buffer = []
             return
         if command_match:
@@ -1213,11 +1322,31 @@ def typing_thread_function():
                 text = text_queue.get(timeout=1)
                 # 直送モードの送信の合図（音声の「エンター」）。文字と同じ列で順番を保つ
                 if isinstance(text, tuple):
-                    if text[0] == "__action__" and not send_to_irodori(action=text[1]):
+                    if text[0] == "__action__" and lc_direct.is_set():
+                        lc_enter()
+                    elif text[0] == "__action__" and not send_to_irodori(action=text[1]):
                         print("[IRODORI] 送信の合図を届けられなかった（Irodori の UI が開いていない？）")
                         _beep_async([(400, 120), (400, 120)])
                     continue
                 print(f"[TYPING_THREAD] Got text from queue: '{text}' (length: {len(text)})")
+                if lc_direct.is_set():
+                    # 文末の「どうぞ」は送信の合図。本文だけ書き込んでから Enter を送る
+                    m = LC_SEND_KEYWORD.search(text)
+                    body = text[: m.start()] if m else text
+                    if body and not lc_send_text(body):
+                        # 作業中のアプリに入れてしまわないよう、貼り付けはせずクリップボードに残す
+                        try:
+                            set_clipboard_text(text)
+                        except Exception:
+                            pass
+                        print(f"[LC] local-claude に届かなかった。クリップボードに残した: '{text.strip()}'")
+                        _beep_async([(400, 120), (400, 120)])
+                        continue
+                    if body:
+                        print(f"[LC] 書き込んだ: '{body.strip()}'")
+                    if m:
+                        lc_enter()
+                    continue
                 if irodori_direct.is_set():
                     if send_to_irodori(text):
                         print(f"[IRODORI] 送った: '{text.strip()}'")
@@ -1266,7 +1395,7 @@ def keyboard_listener_thread():
         print("Keyboard listener stopped")
 
 # --- Keyboard Listener Callbacks ---
-# Ctrl+Alt+F9 で Irodori 直送モードを切り替える。修飾キーは自分で数える
+# Ctrl+Alt+F9 で Irodori 直送、Ctrl+Alt+F10 で local-claude 直送を切り替える。修飾キーは自分で数える
 # （pynput の HotKey は Windows で Ctrl を押しながらの文字キーを取り違えることがあるため、仮想キーコードで見る）。
 # キーを押しっぱなしにしたときの連続入力で何度も切り替わらないよう、F9 を離すまでは1回だけ。
 _held_mods = set()
@@ -1292,16 +1421,20 @@ def on_press(key):
     if mod:
         _held_mods.add(mod)
         return
-    if _vk_of(key) == IRODORI_TOGGLE_VK and {"ctrl", "alt"} <= _held_mods and not _toggle_fired:
+    vk = _vk_of(key)
+    if vk in (IRODORI_TOGGLE_VK, LC_TOGGLE_VK) and {"ctrl", "alt"} <= _held_mods and not _toggle_fired:
         _toggle_fired = True
-        toggle_irodori_direct()
+        if vk == IRODORI_TOGGLE_VK:
+            toggle_irodori_direct()
+        else:
+            toggle_lc_direct()
 
 def on_release(key):
     global _toggle_fired
     mod = _mod_of(key)
     if mod:
         _held_mods.discard(mod)
-    if _vk_of(key) == IRODORI_TOGGLE_VK:
+    if _vk_of(key) in (IRODORI_TOGGLE_VK, LC_TOGGLE_VK):
         _toggle_fired = False
     # Toggle mode: no action needed on key release
     if key == STOP_KEY:
@@ -1332,6 +1465,7 @@ try:
     print(f"\nReal-time dictation started. Press '{STOP_KEY}' to stop the script.")
     print("Recording mode: ON (always on)")
     print(f"Irodori 直送モード: {'ON' if irodori_direct.is_set() else 'OFF'}（Ctrl+Alt+F9 で切り替え）")
+    print(f"local-claude 直送モード: {'ON' if lc_direct.is_set() else 'OFF'}（Ctrl+Alt+F10 で切り替え）")
 
     # Simplified main loop
     while not stop_event.is_set():

@@ -82,6 +82,25 @@ Windows用リアルタイムAI音声認識ツール。faster-whisperを使用し
 - `colon` / `semicolon` / `hyphen` / `dash`
 - `open/close parenthesis` / `open/close bracket` / `open/close brace`
 
+### 直送モード（フォーカスに関係なく送る）
+
+通常は書き起こしをクリップボード経由で**前面のウィンドウ**へ貼り付けます。そのため別のアプリをクリックすると、言葉がそちらへ入ってしまいます。
+直送モードでは貼り付けの代わりに、決まった相手の入力欄へ直接届けます（日本語版のみ）。
+
+| キー | 送り先 | 届け方 |
+|------|------|------|
+| **Ctrl+Alt+F9** | Irodori（音声チャット）の入力欄 | Irodori のバックエンド `POST /api/dictation` へ送り、UI が入力欄へ入れる |
+| **Ctrl+Alt+F10** | local-claude（ターミナルの Claude Code）の入力欄 | そのコンソールへキー入力として直接書き込む（`console_bridge.py`）。送り先は local-claude が起動時に書く `state\console.json` |
+
+- 同じキーでもう一度押すと OFF。F9 と F10 は同時に ON になりません。音で知らせます（Irodori ON: 高い音2回／local-claude ON: 上がる音3回／OFF: 低い音1回）。
+- 起動時の状態はランチャーの「直送先」（なし / Irodori / local-claude）で選べます（`dictation.py --direct irodori|lc`）。
+- **送信**: 文末の「どうぞ。」「どうぞ」、音声の「エンター」で送信します。
+- **local-claude の確認画面**: ツールの許可や選択肢が出ているときに Enter を送ると、既定の選択（「Yes」など）で決まってしまいます。
+  そこで Enter の前に画面を読み、確認・選択の画面なら**1回目は送らずに警告音（下がる音2回）だけ**鳴らします。
+  警告から20秒以内にもう一度「どうぞ」「エンター」と言えば送ります。
+- **届かないとき**（相手が起動していない等）は、貼り付けずにクリップボードへ残し、低い音2回で知らせます。言葉は失われず、作業中のアプリにも入りません。
+- 直送中は `delete last N words` は使えません（前面のウィンドウを操作する仕組みのため）。
+
 ## 設定
 
 `dictation.py` または `dictation_en.py` で変更可能：
@@ -208,6 +227,8 @@ STOP_KEY = keyboard.Key.esc        # 終了キー
 OmniDictate-CLI/
 ├── dictation.py          # 日本語版メインプログラム
 ├── dictation_en.py       # 英語版メインプログラム
+├── console_bridge.py     # 別のコンソールへのキー入力の書き込み・画面の読み取り（local-claude 直送）
+├── launcher.py           # 設定つきの起動画面（OmniDictate.bat から起動）
 ├── start.bat             # 日本語版ランチャー
 ├── start_en.bat          # 英語版ランチャー
 ├── requirements.txt      # Python依存関係
