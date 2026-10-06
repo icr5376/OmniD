@@ -1,263 +1,445 @@
-# OmniDictate: Real-time AI Dictation for Windows
+# OmniDictate-CLI
 
-**Summary:** Real-time AI dictation using faster-whisper—type anywhere with instant, accurate speech-to-text conversion.
+Windows用リアルタイムAI音声認識ツール。faster-whisperを使用し、どこでも瞬時に音声をテキストに変換します。
 
-This project provides a real-time dictation tool for Windows, built using the `faster-whisper` library (a fast implementation of OpenAI's Whisper model), `sounddevice` for audio input, and `pywinauto` for typing into the active window.
+## 目次
 
-## Features
+- [機能](#機能)
+- [システム要件](#システム要件)
+- [インストール](#インストール)
+- [使用方法](#使用方法)
+- [設定](#設定)
+- [技術仕様](#技術仕様)
+- [アーキテクチャ](#アーキテクチャ)
+- [開発者ガイド](#開発者ガイド)
+- [トラブルシューティング](#トラブルシューティング)
+- [最適化履歴](#最適化履歴)
+- [ライセンス](#ライセンス)
 
-*   **Real-time Transcription:** Transcribes your speech to text in real time.
-*   **Voice Activity Detection (VAD):** Automatically starts transcribing when speech is detected.
-*   **Push-to-Talk:** Hold the right Shift key (`Shift_R`) to transcribe, overriding VAD.
-*   **Commands:**
-    *   "delete last *n* words": Deletes the last *n* words. (e.g., "delete last three words")
-    *   "new line" or "next line": Inserts a new line.
-    *   Punctuation: Say punctuation marks like "question mark", "comma", "period", etc., to insert them. See the "Supported Punctuation" section below.
-*   **Optimized for Speed:** Uses `faster-whisper` and threading for low latency.
-*   **Uses Default Audio Input:** Automatically uses your system's default audio input device.
-*    **Hallucination Mitigation**: The script is configured to minimize the occurrence of repetitive or nonsensical text.
+## 機能
 
-## Minimum System Requirements
+- **リアルタイム転写**: 音声をリアルタイムでテキストに変換
+- **トグル式録音**: 右Shiftキーで録音ON/OFFを切り替え
+- **音声活動検出（VAD）**: 録音ON時、音声を検出すると自動的に転写開始
+- **Bluetooth音質維持**: マイクはON時のみ起動（HFP/HSP切り替えを最小化）
+- **音声コマンド**: 単語削除、改行挿入、句読点入力
+- **幻覚軽減**: 反復的・無意味なテキストの自動フィルタリング
+- **GPU高速化**: CUDA対応でリアルタイム転写を実現
 
-*   **OS:** Windows 10 or 11
-*   **Processor:** Intel Core i5 or equivalent (quad-core or better)
-*   **RAM:** 8GB (16GB+ recommended)
-*   **GPU (Recommended):** NVIDIA GPU with CUDA support (4GB+ VRAM, 6GB+ for larger models)
-*   **Storage:** Enough space for the Whisper model.
+## システム要件
 
-## Requirements
+- **OS**: Windows 10/11
+- **Python**: 3.7以降
+- **RAM**: 8GB以上（16GB推奨）
+- **GPU**: CUDA対応NVIDIA GPU（6GB以上VRAM推奨）
+  - 動作確認済み: RTX 4070 Ti (12GB VRAM)
+- **CUDA**: CUDAツールキット + cuDNN
 
-*   **Operating System:** Windows (tested on Windows 10 and 11).
-*   **Python:** Python 3.7 or later.
-*   **NVIDIA GPU (Highly Recommended):** A CUDA-enabled NVIDIA GPU is *highly recommended* for significantly faster transcription. The script will work on CPU, but it will be much slower.
-*   **CUDA Toolkit (if using GPU):** You *must* have the correct CUDA Toolkit installed and configured for your GPU.  See the "CUDA Toolkit and cuDNN" section below for details.
-*   **cuDNN (if using GPU):**  You need the NVIDIA cuDNN library, which is a GPU-accelerated library of primitives for deep neural networks.  See the "CUDA Toolkit and cuDNN" section below.
-*   **ASIO Drivers (Optional, for Low Latency):** For the lowest possible latency on Windows, ASIO drivers are recommended. If your sound card doesn't have native ASIO drivers, install ASIO4ALL: [http://www.asio4all.org/](http://www.asio4all.org/). The script will use the default Windows audio drivers if ASIO is not available.
+## インストール
 
-## Installation
+1. リポジトリをクローン
+2. 仮想環境を作成・有効化:
+   ```bash
+   python -m venv venv
+   venv\Scripts\activate
+   ```
+3. 依存関係をインストール:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. PyTorch CUDA版をインストール（[公式サイト](https://pytorch.org/get-started/locally/)参照）
 
-1.  **Install Python:** If you don't have Python installed, download it from [https://www.python.org/downloads/windows/](https://www.python.org/downloads/windows/). Make sure to check the box that says "Add Python x.x to PATH" during installation.
+## 使用方法
 
-2.  **Clone the Repository:**
+### 起動
 
-    ```bash
-    git clone https://github.com/gurjar1/OmniDictate.git
-    cd OmniDictate
-    ```
+**日本語版**: `start.bat` をダブルクリック
+**英語版**: `start_en.bat` をダブルクリック
 
-3.  **Create a Virtual Environment (Recommended):**
+### 基本操作
 
-    ```bash
-    python -m venv venv
-    venv\Scripts\activate  # On Windows (PowerShell)
-    ```
+| キー | 動作 |
+|------|------|
+| **右Shift** | 録音ON/OFF切り替え |
+| **Esc** | アプリ終了 |
 
-4.  **Install Dependencies:**
+### 動作フロー
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+1. アプリ起動 → マイクOFF（Bluetooth高音質維持）
+2. 右Shift押下 → マイクON（録音開始、ビープ音：高音）
+3. 音声検出 → 自動転写 → アクティブウィンドウに入力
+4. 右Shift押下 → マイクOFF（録音停止、ビープ音：低音）
 
-5.  **Install PyTorch (with CUDA support):**
+### 音声コマンド
 
-    *   **Crucially, you *must* install a CUDA-enabled version of PyTorch if you have an NVIDIA GPU.** The standard `pip install torch` will likely install the CPU-only version.
-    *   Go to the PyTorch website: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/)
-    *   Select your OS (Windows), package (Pip), language (Python), and *Compute Platform* (choose the appropriate CUDA version for your GPU and cuDNN version - see below).
-    *   The website will give you the correct `pip install` command. Copy and run that command. It will look something like this (but the exact command will vary):
+**テキスト操作**:
+- `delete last [n] words` - 最後のn単語を削除
+- `new line` / `next line` - 改行挿入
 
-        ```bash
-        pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-        ```
-6. **CUDA Toolkit and cuDNN:**
-    *   **Determine Required CUDA Version:** The PyTorch installation command from the previous step will indicate the required CUDA version (e.g., `cu118` means CUDA 11.8).
-    *    **Download CUDA Toolkit:** Go to the NVIDIA CUDA Toolkit Archive: [https://developer.nvidia.com/cuda-toolkit-archive](https://developer.nvidia.com/cuda-toolkit-archive).  Download the CUDA Toolkit version that matches the PyTorch requirement.  *Do not* just install the *latest* version; it might not be compatible.
-    *   **Install CUDA Toolkit:** Run the installer.  Choose the "Custom (Advanced)" installation option.
-        *   **Important:**  Make sure the "CUDA" component (and all its subcomponents) is selected.
-        *   **Driver:** You can usually uncheck the "Driver components" if you already have a recent NVIDIA driver installed.  However, if you're unsure, it's generally safe to let the CUDA Toolkit installer update the driver.
-        *   **Visual Studio Integration:** If you don't use Visual Studio, you can uncheck the Visual Studio integration components.
-        *   **Note the Installation Path:** Pay attention to where the CUDA Toolkit is installed (the default is usually `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y`, where `X.Y` is the version number).
-    *   **cuDNN:** The CUDA Deep Neural Network library (cuDNN) is required for GPU acceleration.
-    *   **Download:** You need to download cuDNN from the NVIDIA website: [https://developer.nvidia.com/cudnn](https://developer.nvidia.com/cudnn)
-        *   You'll need to create a free NVIDIA Developer account (or log in if you already have one).
-        *   Download the cuDNN version that matches your CUDA Toolkit version.  For example, if you installed CUDA Toolkit 11.8, download cuDNN for CUDA 11.x.  The cuDNN download page will list the compatible CUDA versions.  **Important:** Download the version "for CUDA 11.x" even if you have, say, CUDA 11.8.
-        *   Choose the "Library for Windows (x86_64)" (or the appropriate version for your system).  It will be a `.zip` file.
+**句読点**（英語音声で入力）:
+- `period` / `comma` / `question mark` / `exclamation mark`
+- `colon` / `semicolon` / `hyphen` / `dash`
+- `open/close parenthesis` / `open/close bracket` / `open/close brace`
 
-    *   **Installation:**
-        1.  **Unzip:** Unzip the downloaded cuDNN `.zip` file.
-        2.  **Copy Files:**  Inside the unzipped folder, you'll find three folders: `bin`, `include`, and `lib`.  You need to copy the *contents* of these folders into the corresponding folders in your CUDA Toolkit installation directory.  The default CUDA Toolkit installation path is usually:
-            `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y` (where `X.Y` is your CUDA version, e.g., `v11.8`).
-            *   Copy the contents of the cuDNN `bin` folder to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\bin`.
-            *   Copy the contents of the cuDNN `include` folder to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\include`.
-            *   Copy the contents of the cuDNN `lib\x64` folder to `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\vX.Y\lib\x64`.
-            **Do not** replace the entire folders; copy only the *contents* of the folders.
+## 設定
 
-    * **Verification**
-        * You don't typically "run" cuDNN directly. Its presence and correct installation are verified by the fact that PyTorch with CUDA support works correctly. If PyTorch can use your GPU, then cuDNN is installed correctly.
+`dictation.py` または `dictation_en.py` で変更可能：
 
-7.  **Install ASIO4ALL (Optional):** If your sound card doesn't have native ASIO drivers, download and install ASIO4ALL from [http://www.asio4all.org/](http://www.asio4all.org/). After installation, you may need to configure it to enable your microphone.
+### 音声感度
 
-## Usage
+```python
+SENSITIVITY_LEVEL = 2  # 1:低, 2:中, 3:高, 4:超高
+```
 
-1.  **Run the Script:**
+| レベル | 用途 |
+|--------|------|
+| 1 | 雑音が多い環境 |
+| 2 | 通常（デフォルト） |
+| 3 | 小声での入力 |
+| 4 | 囁き声対応 |
 
-    ```bash
-    python dictation.py
-    ```
+### Whisperモデル
 
-2.  **Dictation:**
-    *   The script will start in VAD mode, automatically transcribing when it detects speech.
-    *   Hold down the **right Shift key (`Shift_R`)** to use push-to-talk mode. This overrides VAD.
-    *   Speak clearly and at a consistent volume.
+```python
+MODEL_SIZE = "large-v3"  # tiny/base/small/medium/large-v3
+```
 
-3.  **Stopping the Script:** Press the **Escape key (`Esc`)** to stop the script.
+小さいモデルほど高速だが精度は低下。
 
-4.  **Commands:**
-    *  "delete last *n* words": Delete last few words.
-    *  "new line" or "next line": Insert a new line.
+### キー設定
 
-5. **Supported Punctuation:**
-    *   "question mark"
-    *   "exclamation mark"
-    *   "comma"
-    *   "period" / "full stop"
-    *   "colon"
-    *   "semicolon"
-    *   "open parenthesis"
-    *   "close parenthesis"
-    *   "open bracket"
-    *   "close bracket"
-    *   "open brace"
-    *   "close brace"
-    *   "hyphen" / "dash"
-    *   "underscore"
-    *   "plus"
-    *   "equals"
-    *   "at"
-    *   "hash"
-    *   "dollar"
-    *   "percent"
-    *   "caret"
-    *   "ampersand"
-    *   "asterisk"
+```python
+RECORD_KEY = keyboard.Key.shift_r  # 録音トグルキー
+STOP_KEY = keyboard.Key.esc        # 終了キー
+```
 
-## Configuration
+### 言語変更
 
-You can modify the following settings in the `dictation.py` file:
+`model.transcribe()`内の`language`パラメータを変更：
+- 日本語: `language="ja"`
+- 英語: `language="en"`
+- その他: Whisper対応の2文字言語コード
 
-*   **`SILENCE_THRESHOLD`:** Adjust this value to control the sensitivity of the Voice Activity Detection (VAD). Higher values require louder speech to trigger transcription.
-*   **`SILENCE_FRAMES`:** The number of consecutive silent audio chunks required to stop recording in VAD mode.
-*   **`RECORD_KEY`:** Change the push-to-talk key (default is right Shift).
-*   **`STOP_KEY`:** Change the key to stop the script (default is Escape).
+## 技術仕様
 
-### Changing the Whisper Model
+### アーキテクチャ概要
 
-The script currently uses the `large-v3` model. You can change this to a different model size:
+```
+[マイク入力] → [音声増幅] → [VAD検出] → [バッファリング] → [Whisper転写] → [フィルタリング] → [キーボード入力]
+     ↓              ↓            ↓              ↓                 ↓                ↓                  ↓
+  sounddevice  プリエンファシス webrtcvad   スレッド処理    faster-whisper    幻覚除去         pywinauto
+```
 
-1.  **Find the `MODEL_SIZE` variable:** Near the top of the `dictation.py` file.
+### コアコンポーネント
 
-2.  **Change the value:** Change `"large-v3"` to one of:
+#### 1. 音声入力システム
+- **ライブラリ**: sounddevice
+- **サンプリングレート**: 16000Hz (Whisper最適値)
+- **チャンネル**: モノラル
+- **データ型**: int16 → float32変換
+- **処理**:
+  - 増幅フィルター（最大値正規化）
+  - プリエンファシスフィルター（高周波強調、係数0.97）
 
-    *   `"large-v3"` (Best accuracy, slowest)
-    *   `"medium"` (Good balance)
-    *   `"small"` (Faster, less accurate)
-    *   `"base"` (Even faster)
-    *   `"tiny"` (Fastest, least accurate)
+#### 2. 音声活動検出（VAD）
+- **ライブラリ**: webrtcvad
+- **モード設定**: SENSITIVITY_LEVEL に基づく (0-3)
+- **フレームサイズ**: 30ms (480サンプル @ 16kHz)
+- **検出ロジック**:
+  - 音声フレーム連続3回で録音開始
+  - 無音フレーム連続30回（約900ms）で録音停止
 
-    For example:
+#### 3. Whisper音声認識
+- **モデル**: faster-whisper (CTranslate2最適化版)
+- **サイズ**: large-v3 (デフォルト)
+- **コンピュート**: float16 (GPU高速化)
+- **最適化パラメータ**:
+  ```python
+  beam_size=5              # ビームサーチ幅（速度と精度のバランス）
+  temperature=0.0          # 決定的出力（ランダム性なし）
+  condition_on_previous_text=False  # 文脈ドリフト防止
+  no_speech_threshold=0.3  # 音声検出閾値（低めで感度向上）
+  ```
 
-    ```python
-    MODEL_SIZE = "medium"
-    ```
+#### 4. 幻覚フィルタリング
+- **対象**: YouTube終了フレーズなど
+- **方式**: 完全一致フィルタリング（部分一致は使用しない）
+- **日本語例**: "ご視聴ありがとうございました"
+- **英語例**: "thanks for watching", "like and subscribe"
 
-3.  **Save the file.** The script will automatically download the model on first use.
+#### 5. テキスト入力
+- **ライブラリ**: pywinauto (Win32 API)
+- **方式**: Ctrl+V によるクリップボード経由の貼り付け
+- **遅延**: 0.1秒（アプリ応答待ち）
 
-### Changing the Transcription Language
+## アーキテクチャ
 
-By default, this script is configured for **English (`en`)** transcription only. To transcribe other languages supported by Whisper:
+### スレッド構成
 
-1.  **Locate the `process_audio_buffer` function** in the `dictation.py` file.
-2.  **Find the `model.transcribe` line** within that function. It looks like this:
+| スレッド | 役割 | 処理内容 |
+|----------|------|----------|
+| **メインスレッド** | UI制御 | キーボードリスナー、アプリ終了制御 |
+| **音声入力スレッド** | 録音 | sounddeviceコールバック、バッファ追加 |
+| **転写スレッド** | 音声認識 | Whisper実行、テキスト出力 |
 
-    ```python
-    segments, info = model.transcribe(audio_float32, beam_size=5, language="en", temperature=0.0, condition_on_previous_text=False)
-    ```
+### データフロー
 
-3.  **Change the `language="en"` parameter** to the appropriate two-letter language code for the language you want to transcribe.
+1. **音声入力**: `audio_callback()` → `audio_queue`
+2. **VAD検出**: `vad.is_speech()` → 音声/無音判定
+3. **バッファ蓄積**: `audio_buffer` (deque) → 最大50チャンク
+4. **転写トリガー**: 無音検出 → `transcription_event.set()`
+5. **Whisper実行**: `transcription_thread()` → GPU処理
+6. **テキスト出力**: `type_text()` → クリップボード経由
 
-    *   Example for **Hindi**: `language="hi"`
-    *   Example for **Spanish**: `language="es"`
-    *   Example for **French**: `language="fr"`
+### メモリ管理
 
-    The modified line would look like this (for Hindi):
+- **音声バッファ**: deque (最大50チャンク = 約15秒)
+- **GPU VRAM**: モデルサイズ依存
+  - large-v3: 約5GB
+  - medium: 約2GB
+  - small: 約1GB
 
-    ```python
-    segments, info = model.transcribe(audio_float32, beam_size=5, language="hi", temperature=0.0, condition_on_previous_text=False)
-    ```
+## 開発者ガイド
 
-4.  **Save the `dictation.py` file.**
+### ファイル構成
 
-**Important Notes:**
+```
+OmniDictate-CLI/
+├── dictation.py          # 日本語版メインプログラム
+├── dictation_en.py       # 英語版メインプログラム
+├── start.bat             # 日本語版ランチャー
+├── start_en.bat          # 英語版ランチャー
+├── requirements.txt      # Python依存関係
+├── README.md             # このファイル
+└── venv/                 # 仮想環境 (自動生成)
+```
 
-*   The standard Whisper models used by `faster-whisper` (like `large-v3`, `medium`, etc.) are **multilingual**. You generally *do not* need to download a different model file just to change the language.
-*   Specifying the correct language code helps the model perform more accurately and potentially faster for that specific language.
-*   Refer to the Whisper documentation for a list of supported languages and their corresponding two-letter codes: [https://github.com/openai/whisper#available-models-and-languages](https://github.com/openai/whisper#available-models-and-languages)
+### 主要な関数
 
-### Microphone Sample Rate
+#### `dictation.py` / `dictation_en.py`
 
-Ensure your microphone is set to 16000 Hz in Windows sound settings:
+| 関数名 | 行番号 | 役割 |
+|--------|--------|------|
+| `load_model()` | ~100 | Whisperモデル読み込み、GPU検出 |
+| `audio_callback()` | ~200 | 音声入力コールバック、VAD実行 |
+| `transcription_thread()` | ~480 | 転写スレッド、Whisper実行 |
+| `type_text()` | ~560 | テキスト入力、クリップボード操作 |
+| `on_press()` / `on_release()` | ~680 | キーボードイベント処理 |
 
-1.  Right-click speaker icon -> "Sounds" or "Open Sound settings."
-2.  "Recording" tab.
-3.  Select microphone -> "Properties."
-4.  "Advanced" tab.
-5.  "Default Format": select "16000 Hz".
+### デバッグログの見方
 
-## Troubleshooting
+アプリケーションは詳細なログを出力します：
 
-*   **No audio input:** Check microphone selection and Windows sound settings (make sure it's set to 16000 Hz).
-*   **ASIO not detected:** Ensure ASIO4ALL is installed and configured (enable your microphone).
-*   **`CUDA is not available`:**
-    *   Verify NVIDIA GPU and driver.
-    *   Verify *correct* CUDA Toolkit and cuDNN are installed (matching PyTorch). Run `nvcc --version`.
-    *   Check CUDA Toolkit `bin` and `libnvvp` are in your PATH.
-    *   Reinstall PyTorch (CUDA-enabled!) *within* the virtual environment.
-    *   Check for conflicting installations.
-*   **Slow transcription:** Use a GPU. Try a smaller model.
-*   **Hallucinations:** The script is configured to minimize this. Improve audio quality.
-*   **`ModuleNotFoundError`:** Activate your virtual environment and reinstall dependencies: `pip install -r requirements.txt`. If it persists, uninstall/reinstall the specific package, or recreate the virtual environment.
-*   **COM Initialization Error:** If you encounter an error related to COM initialization (`CoInitializeEx` failed), ensure that the `typing_thread_function` in `dictation.py` includes the following lines at the beginning and end of the function:
+```
+[AUDIO] Audio level: 245.6
+→ 音声レベル（0-32768）。100以上で音声あり
 
-    ```python
-    def typing_thread_function():
-        import pythoncom
-        pythoncom.CoInitializeEx(pythoncom.COINIT_MULTITHREADED)  # Add this line
-        try:
-            # ... rest of the function ...
-        finally:
-            pythoncom.CoUninitialize()  # Add this line
-    ```
-   This ensures proper COM initialization and cleanup for `pywinauto`. This should prevent COM-related errors. If you still encounter issues, make sure no other applications are interfering with COM.
+[VAD] Voice detected: True, Consecutive frames: 3
+→ VAD検出結果。Consecutive frames: 3で録音開始
 
-## License
+[TRANSCRIPTION] *** STARTING TRANSCRIPTION ***
+[TRANSCRIPTION] Audio samples: 28800, Chunks: 18, Duration: 1.80s
+→ 転写開始。サンプル数、チャンク数、音声時間
 
-MIT License
+[TRANSCRIPTION] *** TRANSCRIPTION COMPLETED ***
+[TRANSCRIPTION] Language: ja, Probability: 0.95
+[TRANSCRIPTION] Duration: 1.80s
+[TRANSCRIPTION] Segments: 1
+→ 転写完了。言語確率、セグメント数
 
-Copyright (c) 2023 GURJAR1
+[TRANSCRIPTION] Full text: 'こんにちは'
+→ 認識されたテキスト
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+[TYPING] Typing text: 'こんにちは'
+→ 入力されるテキスト
+```
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+### パラメータチューニングガイド
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+#### 問題：音声が認識されない
+
+**症状**: "Segments: 0, Full text: ''" が頻発
+
+**確認ポイント**:
+1. 音声レベル（100以上必要）
+2. VAD検出（Voice detected: True）
+3. 音声時間（1秒以上推奨）
+
+**調整方法**:
+```python
+# 感度を上げる
+SENSITIVITY_LEVEL = 3  # または 4
+
+# Whisper閾値を下げる
+no_speech_threshold=0.2  # デフォルト: 0.3
+```
+
+#### 問題：幻覚出力が多い
+
+**症状**: "ご視聴ありがとうございました" など無関係なテキスト
+
+**調整方法**:
+```python
+# 幻覚フィルターに追加 (dictation.py:537行目付近)
+hallucination_phrases = (
+    "あなたの幻覚フレーズ",
+    # ... 既存のフレーズ
+)
+
+# または no_speech_threshold を上げる
+no_speech_threshold=0.4  # より厳格
+```
+
+#### 問題：転写が遅い
+
+**調整方法**:
+```python
+# モデルサイズを下げる
+MODEL_SIZE = "medium"  # または "small"
+
+# ビームサイズを下げる
+beam_size=3  # デフォルト: 5
+```
+
+### コード変更時の注意点
+
+#### 1. Whisperパラメータの変更
+
+**重要**: 以下のパラメータは設定しないこと:
+- `vad_filter=True` - アプリ独自のVADと競合し、二重フィルタリングで音声が遮断される
+- `initial_prompt` - バイアスがかかり幻覚の原因になる
+
+**推奨設定**:
+```python
+segments, info = model.transcribe(
+    audio_float32,
+    beam_size=5,
+    language="ja",  # または "en"
+    temperature=0.0,
+    condition_on_previous_text=False,
+    no_speech_threshold=0.3
+)
+```
+
+#### 2. VADパラメータの変更
+
+```python
+# 音声検出の連続フレーム数（少なすぎると誤検出）
+voice_frames_threshold = 3  # 推奨: 3-5
+
+# 無音検出の連続フレーム数（多すぎると反応が遅い）
+silence_frames_threshold = 30  # 推奨: 20-40
+```
+
+#### 3. エンコーディング
+
+**必須**: すべてのPythonファイルに以下を追加:
+```python
+# -*- coding: utf-8 -*-
+```
+
+バッチファイルに以下を追加:
+```batch
+set PYTHONUTF8=1
+```
+
+これにより日本語Windowsでの文字化けを防止。
+
+#### 4. バッチファイルのパス
+
+**必須**: 相対パス使用:
+```batch
+cd /d "%~dp0"
+venv\Scripts\python.exe dictation.py
+```
+
+絶対パスは使用しない（ポータビリティのため）。
+
+## Bluetooth使用時の注意
+
+本アプリはBluetoothイヤホン使用時の音質劣化問題に対応しています：
+
+- **起動時**: マイク未起動 → A2DP（高音質）維持
+- **録音ON**: マイク起動 → HFP/HSP（通話品質）に切り替わる
+- **録音OFF**: マイク停止 → A2DP（高音質）に戻る
+
+録音ON時に100-300msの遅延が発生する場合があります。
+
+## トラブルシューティング
+
+| 問題 | 解決策 |
+|------|--------|
+| **CUDA not available** | PyTorch CUDA版を再インストール、CUDAツールキット/cuDNNを確認 |
+| **音声入力なし** | マイク設定確認、16000Hz推奨 |
+| **転写が遅い** | GPUを使用、または小さいモデルに変更 |
+| **ModuleNotFoundError** | 仮想環境を有効化して `pip install -r requirements.txt` |
+| **文字化け** | ファイル先頭に `# -*- coding: utf-8 -*-`、batch に `set PYTHONUTF8=1` |
+| **ダブルクリックで起動しない** | batch ファイルのパスが相対パスになっているか確認 |
+| **Segments: 0 が頻発** | SENSITIVITY_LEVEL を上げる、音声を大きくする |
+| **幻覚が出る** | hallucination_phrases に追加、no_speech_threshold を調整 |
+
+### デバッグモード
+
+詳細ログを確認するには、コマンドラインから実行:
+```bash
+cd C:\Apps\OmniDictate-CLI
+venv\Scripts\activate
+python dictation.py  # または dictation_en.py
+```
+
+## 最適化履歴
+
+### 2025-12-10: VADフィルター問題修正
+
+**問題**: Whisperの `vad_filter=True` により二重フィルタリングが発生し、正常な音声が遮断される
+
+**修正内容**:
+- `vad_filter=True` を削除
+- `vad_parameters` を削除
+- アプリ独自のwebrtcvad VADのみを使用
+
+**結果**: テキスト出力が正常に機能
+
+### 2025-12-10: 幻覚フィルター最適化
+
+**問題**: 部分一致フィルターが正常なテキストまで遮断
+
+**修正内容**:
+- 部分一致フィルタリングを削除
+- 完全一致のみに変更
+
+**結果**: 誤検出が減少
+
+### 2025-12-10: Whisperパラメータ最適化
+
+**変更内容**:
+- `beam_size`: 8 → 5（速度向上）
+- `no_speech_threshold`: 0.6 → 0.3（感度向上）
+- `initial_prompt` を削除（バイアス除去）
+- `condition_on_previous_text`: False（文脈ドリフト防止）
+
+**結果**: 認識精度と速度のバランス改善
+
+### 2025-12-10: エンコーディング問題修正
+
+**問題**: 日本語Windowsで起動時に文字化け
+
+**修正内容**:
+- Python ファイルに `# -*- coding: utf-8 -*-` を追加
+- batch ファイルに `set PYTHONUTF8=1` を追加
+
+**結果**: 文字化け解消
+
+### 2025-12-10: ポータビリティ改善
+
+**問題**: 絶対パスによりディレクトリ移動不可
+
+**修正内容**:
+- batch ファイルを相対パスに変更（`%~dp0` 使用）
+- `call venv\Scripts\activate.bat` → `venv\Scripts\python.exe` に変更
+
+**結果**: どのディレクトリでも動作可能に
+
+## ライセンス
+
+MIT License - Copyright (c) 2023 GURJAR1
