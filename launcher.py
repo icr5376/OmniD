@@ -137,7 +137,7 @@ class OmniDictateLauncher:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("OmniDictate Launcher")
-        self.root.geometry("420x520")
+        self.root.geometry("420x590")
         self.root.resizable(False, False)
         self.root.configure(bg=COLORS["bg"])
         self.process = None
@@ -145,8 +145,8 @@ class OmniDictateLauncher:
         # Center window on screen
         self.root.update_idletasks()
         x = (self.root.winfo_screenwidth() // 2) - 210
-        y = (self.root.winfo_screenheight() // 2) - 260
-        self.root.geometry(f"420x520+{x}+{y}")
+        y = (self.root.winfo_screenheight() // 2) - 295
+        self.root.geometry(f"420x590+{x}+{y}")
 
         # Icon (optional)
         try:
@@ -160,7 +160,7 @@ class OmniDictateLauncher:
 
     def _load_config(self):
         """Load saved settings or use defaults."""
-        self.config = {"language": 0, "device": 0, "ai_mode": False}
+        self.config = {"language": 0, "device": 0, "ai_mode": False, "irodori": False}
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -174,6 +174,7 @@ class OmniDictateLauncher:
         self.config["language"] = self.lang_selector.get_selected()
         self.config["device"] = self.device_selector.get_selected()
         self.config["ai_mode"] = self.ai_toggle.get_state()
+        self.config["irodori"] = self.irodori_toggle.get_state()
         try:
             with open(CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.config, f, ensure_ascii=False, indent=2)
@@ -240,6 +241,28 @@ class OmniDictateLauncher:
         )
         self.ai_toggle.pack(side="right", padx=(12, 0))
 
+        # --- Irodori 直送 ---
+        # 貼り付けの代わりに Irodori（音声チャット）の入力欄へ直接送る。起動時の初期状態で、
+        # 起動中も Ctrl+Alt+F9 で切り替えられる。日本語版（dictation.py）のみ対応。
+        iro_row = tk.Frame(card, bg=COLORS["bg_card"])
+        iro_row.grid(row=5, column=0, columnspan=2, sticky="ew", pady=(12, 4))
+
+        iro_label_frame = tk.Frame(iro_row, bg=COLORS["bg_card"])
+        iro_label_frame.pack(side="left")
+
+        tk.Label(iro_label_frame, text="Irodori へ直送 / Send to Irodori",
+                 font=("Segoe UI", 10, "bold"),
+                 bg=COLORS["bg_card"], fg=COLORS["text_label"]).pack(anchor="w")
+        tk.Label(iro_label_frame, text="フォーカスに関係なく入力欄へ（Ctrl+Alt+F9 で切替）",
+                 font=("Segoe UI", 8),
+                 bg=COLORS["bg_card"], fg=COLORS["text_dim"]).pack(anchor="w")
+
+        self.irodori_toggle = ToggleButton(
+            iro_row, initial=self.config["irodori"],
+            command=lambda _: self._on_setting_changed()
+        )
+        self.irodori_toggle.pack(side="right", padx=(12, 0))
+
         # ===== Info Card =====
         info_card = tk.Frame(self.root, bg=COLORS["bg_card"], padx=28, pady=14,
                              highlightbackground=COLORS["border"], highlightthickness=1)
@@ -272,7 +295,7 @@ class OmniDictateLauncher:
             bg=COLORS["status_run"] if self.process else COLORS["accent"]))
 
         # ===== Footer =====
-        footer = tk.Label(self.root, text="マイク: 常時ON  |  Esc: 終了",
+        footer = tk.Label(self.root, text="マイク: 常時ON  |  Esc: 終了  |  Ctrl+Alt+F9: Irodori 直送",
                           font=("Segoe UI", 8), bg=COLORS["bg"], fg=COLORS["text_dim"])
         footer.pack(side="bottom", pady=(0, 10))
 
@@ -289,7 +312,8 @@ class OmniDictateLauncher:
         lang = "日本語" if self.lang_selector.get_selected() == 0 else "English"
         dev = "GPU" if self.device_selector.get_selected() == 0 else "CPU"
         ai = " + AI" if self.ai_toggle.get_state() else ""
-        self.config_summary.config(text=f"{lang} | {dev}{ai}")
+        iro = " + Irodori" if self.irodori_toggle.get_state() and self.lang_selector.get_selected() == 0 else ""
+        self.config_summary.config(text=f"{lang} | {dev}{ai}{iro}")
 
     def _build_command(self):
         """Build the command line based on current settings."""
@@ -304,6 +328,8 @@ class OmniDictateLauncher:
             args.append("--cpu")
         if ai_on:
             args.append("--ai")
+        if self.irodori_toggle.get_state() and lang_idx == 0:  # 英語版は未対応
+            args.append("--irodori")
 
         return args
 

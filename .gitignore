@@ -5,3 +5,10 @@ __pycache__/
 .env
 venv/
 .DS_Store
+# ローカル専用（この PC の設定・実行時の状態・退避）
+.claude/
+launcher_config.json
+.omnidictate_status.json
+.omnidictate_status.json.tmp
+*.bak
+_backup_*/

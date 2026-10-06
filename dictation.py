@@ -219,9 +219,64 @@ import argparse
 _parser = argparse.ArgumentParser(description="OmniDictate-CLI Real-time Dictation")
 _parser.add_argument("--cpu", action="store_true", help="Force CPU mode (VRAM usage: 0GB, slower transcription)")
 _parser.add_argument("--ai", action="store_true", help="Enable Ollama AI post-processing for improved kanji accuracy")
+_parser.add_argument("--irodori", action="store_true", help="Start with Irodori direct mode ON (send text to Irodori instead of pasting)")
 _args = _parser.parse_args()
 FORCE_CPU = _args.cpu
 AI_CORRECTION = _args.ai
+
+# --- Irodori 直送モード（2026-10-06）---
+# 通常は書き起こしをクリップボード経由で「前面のウィンドウ」へ貼り付ける。そのため他のアプリを
+# クリックした瞬間に行き先が変わり、Irodori（音声チャット）へ話しかけているつもりの言葉が
+# 作業中の文書に入ってしまう。直送モードでは貼り付けの代わりに Irodori のバックエンドへ送り、
+# Irodori の UI が入力欄へ入れる。フォーカスがどこにあっても Irodori にだけ届く。
+#   切り替え: Ctrl+Alt+F9（ON で高い音2回、OFF で低い音1回）／起動時 ON は --irodori（ランチャーのトグル）
+#   Irodori の UI が開いていない・バックエンドが止まっているときは、貼り付けずにクリップボードへ残し、
+#   低い音2回で知らせる（言葉は失わない。作業中のアプリにも入れない）。
+IRODORI_DICTATION_URL = os.environ.get("OMNIDICTATE_IRODORI_URL", "http://127.0.0.1:8000/api/dictation")
+IRODORI_TOGGLE_VK = 0x78  # F9（Ctrl+Alt と同時押し）
+irodori_direct = threading.Event()
+if _args.irodori:
+    irodori_direct.set()
+
+def _beep_async(pattern):
+    """(周波数, ミリ秒) の並びを鳴らす。winsound.Beep は鳴り終わるまで戻らないので別スレッドで。"""
+    def _run():
+        try:
+            import winsound
+            for freq, ms in pattern:
+                winsound.Beep(freq, ms)
+        except Exception:
+            pass
+    threading.Thread(target=_run, daemon=True).start()
+
+def toggle_irodori_direct():
+    if irodori_direct.is_set():
+        irodori_direct.clear()
+        print("[IRODORI] 直送モード OFF → 前面のウィンドウへ貼り付ける")
+        _beep_async([(500, 200)])
+    else:
+        irodori_direct.set()
+        print(f"[IRODORI] 直送モード ON → Irodori へ送る ({IRODORI_DICTATION_URL})")
+        _beep_async([(1200, 90), (1600, 90)])
+
+def send_to_irodori(text="", action=None):
+    """Irodori のバックエンドへ送る。UI が受け取れたら True。"""
+    import urllib.request
+    body = {"text": text}
+    if action:
+        body["action"] = action
+    req = urllib.request.Request(
+        IRODORI_DICTATION_URL,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=3) as res:
+            return json.loads(res.read().decode("utf-8")).get("delivered", 0) > 0
+    except Exception as e:
+        print(f"[IRODORI] 送信に失敗: {e}")
+        return False
 
 # --- Ollama AI Correction ---
 OLLAMA_MODEL = "gemma4:12b-it-qat"
@@ -410,6 +465,7 @@ STATUS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".omnidic
 def _write_status_file():
     status = {
         "idle": (not recording) and (not vad_active) and text_queue.empty(),
+        "irodori": irodori_direct.is_set(),
         "pid": os.getpid(),
         "ts": time.time(),
     }
@@ -558,6 +614,17 @@ def delete_last_n_words_direct(n):
         print(f"Error deleting text directly: {e}")
         return False
 
+# 直送モードでも使うので関数の外に置く
+PUNCTUATION_MAP = {
+    "question mark": "?", "exclamation mark": "!", "comma": ",",
+    "period": ".", "full stop": ".", "colon": ":", "semicolon": ";",
+    "open parenthesis": "(", "close parenthesis": ")", "open bracket": "[",
+    "close bracket": "]", "open brace": "{", "close brace": "}",
+    "hyphen": "-", "dash": "-", "underscore": "_", "plus": "+",
+    "equals": "=", "at": "@", "hash": "#", "dollar": "$",
+    "percent": "%", "caret": "^", "ampersand": "&", "asterisk": "*",
+}
+
 def insert_punctuation(punctuation_name):
     """Inserts punctuation based on a verbal command."""
     try:
@@ -568,17 +635,7 @@ def insert_punctuation(punctuation_name):
         app = application.Application().connect(handle=hwnd)
         active_window = app.top_window()
 
-        punctuation_map = {
-            "question mark": "?", "exclamation mark": "!", "comma": ",",
-            "period": ".", "full stop": ".", "colon": ":", "semicolon": ";",
-            "open parenthesis": "(", "close parenthesis": ")", "open bracket": "[",
-            "close bracket": "]", "open brace": "{", "close brace": "}",
-            "hyphen": "-", "dash": "-", "underscore": "_", "plus": "+",
-            "equals": "=", "at": "@", "hash": "#", "dollar": "$",
-            "percent": "%", "caret": "^", "ampersand": "&", "asterisk": "*",
-        }
-
-        punctuation = punctuation_map.get(punctuation_name.lower())
+        punctuation = PUNCTUATION_MAP.get(punctuation_name.lower())
         if punctuation:
             active_window.type_keys(punctuation)
             print(f"Inserted: {punctuation}")
@@ -1020,17 +1077,33 @@ def process_audio_buffer(pause_sec=0.0):
         # --- Command Parsing ---
         new_line_match = re.match(r"(new line|next line|エンター)", transcribed_text.strip().lower())
         if new_line_match:
+            if irodori_direct.is_set():
+                # Irodori の入力欄で Enter ＝送信。先に並んでいる文字を追い越さないよう、同じ列に並べる
+                text_queue.put(("__action__", "send"))
+                audio_buffer = []
+                return
             if insert_new_line():
                 audio_buffer = []
                 return
 
         punctuation_match = re.match(r"(question mark|exclamation mark|comma|period|full stop|colon|semicolon|open parenthesis|close parenthesis|open bracket|close bracket|open brace|close brace|hyphen|dash|underscore|plus|equals|at|hash|dollar|percent|caret|ampersand|asterisk)", transcribed_text.strip().lower())
         if punctuation_match:
+            if irodori_direct.is_set():
+                mark = PUNCTUATION_MAP.get(punctuation_match.group(1))
+                if mark:
+                    text_queue.put(mark)
+                audio_buffer = []
+                return
             if insert_punctuation(punctuation_match.group(1)):
                 audio_buffer = []
                 return
 
         command_match = re.match(r"(delete|remove) last (\d+|one|two|three|four|five|six|seven|eight|nine|ten) words?", transcribed_text.strip().lower())
+        if command_match and irodori_direct.is_set():
+            # 前面のウィンドウのキー操作で消す仕組みなので、直送中に動かすと作業中の文書を消してしまう
+            print("[IRODORI] 直送モード中は「delete last N words」を使えない（無視した）")
+            audio_buffer = []
+            return
         if command_match:
             action = command_match.group(1)
             if command_match.group(2).isdigit():
@@ -1138,7 +1211,25 @@ def typing_thread_function():
             try:
                 print(f"[TYPING_THREAD] Waiting for text... Queue size: {text_queue.qsize()}")
                 text = text_queue.get(timeout=1)
+                # 直送モードの送信の合図（音声の「エンター」）。文字と同じ列で順番を保つ
+                if isinstance(text, tuple):
+                    if text[0] == "__action__" and not send_to_irodori(action=text[1]):
+                        print("[IRODORI] 送信の合図を届けられなかった（Irodori の UI が開いていない？）")
+                        _beep_async([(400, 120), (400, 120)])
+                    continue
                 print(f"[TYPING_THREAD] Got text from queue: '{text}' (length: {len(text)})")
+                if irodori_direct.is_set():
+                    if send_to_irodori(text):
+                        print(f"[IRODORI] 送った: '{text.strip()}'")
+                    else:
+                        # 作業中のアプリに入れてしまわないよう、貼り付けはせずクリップボードに残す
+                        try:
+                            set_clipboard_text(text)
+                        except Exception:
+                            pass
+                        print(f"[IRODORI] Irodori に届かなかった（UI が開いていない？）。クリップボードに残した: '{text.strip()}'")
+                        _beep_async([(400, 120), (400, 120)])
+                    continue
                 try:
                     print(f"[TYPING_THREAD] Copying text to clipboard and pasting...")
                     set_clipboard_text(text)
@@ -1175,10 +1266,43 @@ def keyboard_listener_thread():
         print("Keyboard listener stopped")
 
 # --- Keyboard Listener Callbacks ---
+# Ctrl+Alt+F9 で Irodori 直送モードを切り替える。修飾キーは自分で数える
+# （pynput の HotKey は Windows で Ctrl を押しながらの文字キーを取り違えることがあるため、仮想キーコードで見る）。
+# キーを押しっぱなしにしたときの連続入力で何度も切り替わらないよう、F9 を離すまでは1回だけ。
+_held_mods = set()
+_toggle_fired = False
+
+def _mod_of(key):
+    if key in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+        return "ctrl"
+    if key in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
+        return "alt"
+    return None
+
+def _vk_of(key):
+    vk = getattr(key, "vk", None)
+    if vk is None and hasattr(key, "value"):
+        vk = getattr(key.value, "vk", None)
+    return vk
+
 def on_press(key):
-    pass  # マイクは常時ONのため、キー押下での録音トグルは廃止
+    # マイクは常時ONのため、キー押下での録音トグルは廃止
+    global _toggle_fired
+    mod = _mod_of(key)
+    if mod:
+        _held_mods.add(mod)
+        return
+    if _vk_of(key) == IRODORI_TOGGLE_VK and {"ctrl", "alt"} <= _held_mods and not _toggle_fired:
+        _toggle_fired = True
+        toggle_irodori_direct()
 
 def on_release(key):
+    global _toggle_fired
+    mod = _mod_of(key)
+    if mod:
+        _held_mods.discard(mod)
+    if _vk_of(key) == IRODORI_TOGGLE_VK:
+        _toggle_fired = False
     # Toggle mode: no action needed on key release
     if key == STOP_KEY:
         print("Stopping...")
@@ -1207,6 +1331,7 @@ try:
 
     print(f"\nReal-time dictation started. Press '{STOP_KEY}' to stop the script.")
     print("Recording mode: ON (always on)")
+    print(f"Irodori 直送モード: {'ON' if irodori_direct.is_set() else 'OFF'}（Ctrl+Alt+F9 で切り替え）")
 
     # Simplified main loop
     while not stop_event.is_set():
