@@ -29,7 +29,7 @@ Windows用リアルタイムAI音声認識ツール。faster-whisperを使用し
 ## システム要件
 
 - **OS**: Windows 10/11
-- **Python**: 3.7以降
+- **Python**: 3.13（動作確認は 3.13.5。`requirements.txt` の版は 3.11 以上が前提）
 - **RAM**: 8GB以上（16GB推奨）
 - **GPU**: CUDA対応NVIDIA GPU（6GB以上VRAM推奨）
   - 動作確認済み: RTX 4070 Ti (12GB VRAM)
@@ -47,7 +47,8 @@ Windows用リアルタイムAI音声認識ツール。faster-whisperを使用し
    ```bash
    pip install -r requirements.txt
    ```
-4. PyTorch CUDA版をインストール（[公式サイト](https://pytorch.org/get-started/locally/)参照）
+   PyTorch の CUDA 版（CUDA 12.4 用）もここで一緒に入る。動作中の環境の版で固定してある。
+4. CUDA 12.4 以外を使う場合は、`requirements.txt` の `cu124` と `torch` の版を書き換えてから実行する（[公式サイト](https://pytorch.org/get-started/locally/)参照）
 
 ## 使用方法
 
