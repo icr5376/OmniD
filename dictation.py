@@ -281,6 +281,15 @@ def _beep_async(pattern):
             pass
     threading.Thread(target=_run, daemon=True).start()
 
+# キーワード（「どうぞ」「エンター」）で送信したことを知らせる音（2026-10-07）。Irodori の UI の送信チャイム
+# （app.js の playSendChime、880→1320Hz の2音）と同じ音にそろえる。送信が実際に成功したときだけ鳴らす
+# （確認画面で止めた1回目は警告音、届かないときは低い音2回で、聞き分けられる）。
+# Irodori 直送の「どうぞ」は Irodori の UI が判定して鳴らすので、ここでは鳴らさない（二重に鳴るため）。
+SEND_CHIME = [(880, 80), (1320, 140)]
+
+def play_send_chime():
+    _beep_async(SEND_CHIME)
+
 def toggle_irodori_direct():
     if irodori_direct.is_set():
         irodori_direct.clear()
@@ -362,6 +371,7 @@ def lc_enter():
     ok, out = _console_bridge("enter", pid)
     if ok:
         print("[LC] Enter を送った")
+        play_send_chime()
     else:
         print(f"[LC] Enter の書き込みに失敗（pid {pid}）: {out.strip()}")
         _beep_async([(400, 120), (400, 120)])
@@ -1324,9 +1334,12 @@ def typing_thread_function():
                 if isinstance(text, tuple):
                     if text[0] == "__action__" and lc_direct.is_set():
                         lc_enter()
-                    elif text[0] == "__action__" and not send_to_irodori(action=text[1]):
-                        print("[IRODORI] 送信の合図を届けられなかった（Irodori の UI が開いていない？）")
-                        _beep_async([(400, 120), (400, 120)])
+                    elif text[0] == "__action__":
+                        if send_to_irodori(action=text[1]):
+                            play_send_chime()   # 音声の「エンター」は Irodori の UI ではチャイムが鳴らないので、ここで鳴らす
+                        else:
+                            print("[IRODORI] 送信の合図を届けられなかった（Irodori の UI が開いていない？）")
+                            _beep_async([(400, 120), (400, 120)])
                     continue
                 print(f"[TYPING_THREAD] Got text from queue: '{text}' (length: {len(text)})")
                 if lc_direct.is_set():
