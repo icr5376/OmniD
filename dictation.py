@@ -270,11 +270,45 @@ elif _args.direct == "lc":
 def direct_active():
     return irodori_direct.is_set() or lc_direct.is_set()
 
+_TONE_DIR = os.path.join(os.environ.get("TEMP", os.path.dirname(os.path.abspath(__file__))), "omnidictate_tones")
+
+def _tone_wav(pattern):
+    """(周波数, ミリ秒) の並びを wav にする（同じ並びは作り置きを使い回す）。"""
+    import array, math, wave
+    name = "_".join(f"{f}-{ms}" for f, ms in pattern) + ".wav"
+    path = os.path.join(_TONE_DIR, name)
+    if not os.path.exists(path):
+        os.makedirs(_TONE_DIR, exist_ok=True)
+        rate, a = 24000, array.array("h")
+        for freq, ms in pattern:
+            n = int(rate * ms / 1000)
+            edge = max(1, int(rate * 0.005))   # 両端 5ms のフェード（プツッという音を消す）
+            for i in range(n):
+                env = min(1.0, i / edge, (n - 1 - i) / edge)
+                a.append(int(9000 * env * math.sin(2 * math.pi * freq * i / rate)))
+        tmp = path + f".{os.getpid()}.tmp"
+        with wave.open(tmp, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(a.tobytes())
+        os.replace(tmp, path)
+    return path
+
 def _beep_async(pattern):
-    """(周波数, ミリ秒) の並びを鳴らす。winsound.Beep は鳴り終わるまで戻らないので別スレッドで。"""
+    """(周波数, ミリ秒) の並びを鳴らす（鳴り終わるまで戻らないので別スレッドで）。
+    以前は winsound.Beep だったが、2026-10-13 にこの PC で Beep が「成功」を返しながら、どの出力機器の
+    どの音声セッションにも音が出ていないことを計測で確認した（送信の「ピロン」が鳴らなくなった）。
+    同じ PC で鳴っている local-claude の読み上げ・チャイムと同じく、wav を作って PlaySound で鳴らす。
+    wav で鳴らせないときだけ Beep に戻す。"""
     def _run():
+        import winsound
         try:
-            import winsound
+            winsound.PlaySound(_tone_wav(pattern), winsound.SND_FILENAME | winsound.SND_NODEFAULT)
+            return
+        except Exception as e:
+            print(f"[SOUND] wav で鳴らせなかった（{e}）。Beep で鳴らす")
+        try:
             for freq, ms in pattern:
                 winsound.Beep(freq, ms)
         except Exception:
